@@ -1,0 +1,12 @@
+ckpt/
+/datasets
+eval/
+log/
+/NWPUCrowd
+runs/
+/shanghaitechA
+/shanghaitechB
+/yolo_NWPU
+/.vscode
+/wandb
+*.engine
