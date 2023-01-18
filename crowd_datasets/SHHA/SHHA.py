@@ -110,7 +110,98 @@ def load_data(img_gt_path, train):
 
     return img, np.array(points)
 
-# random crop augumentation
+def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
+    # Resize and pad image while meeting stride-multiple constraints
+    shape = im.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    if not scaleup:  # only scale down, do not scale up (for better val mAP)
+        r = min(r, 1.0)
+
+    # Compute padding
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif scaleFill:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+    return im, ratio, (dw, dh)
+
+
+# # random crop augumentation
+# def random_crop(img, den, num_patch=4, half_h=128, half_w=128):
+#     half_h = 128
+#     half_w = 128
+#     result_img = np.zeros([num_patch, img.shape[0], half_h, half_w])
+#     result_den = []
+#     # crop num_patch for each image
+#     if half_h == 512 and half_w == 512:
+#         img_h = img.size(1)
+#         img_w = img.size(2)
+        
+#         if half_h < img_h:
+#             start_h = random.randint(0, img.size(1) - half_h)
+#             end_h = start_h + half_h
+#         else:
+#             start_h = 0
+#             end_h = img_h
+        
+#         if half_w < img_w:
+#             start_w = random.randint(0, img.size(2) - half_w)
+#             end_w = start_w + half_w
+#         else:
+#             start_w = 0
+#             end_w = img_w
+        
+#         pad_up = int((half_h - (end_h - start_h)) // 2)
+#         # pad_down = (half_h - (end_h - start_h)) - pad_up
+#         pad_left = int((half_w - (end_w - start_w)) // 2)
+#         # pad_right = (half_w - (end_w - start_w)) - pad_left
+#         # result_img[0] = np.pad(img[:, start_h:end_h, start_w:end_w], ((pad_up, pad_down), (pad_left, pad_right)), 'constant', constant_values=0)
+#         result_img[0][:, pad_up:end_h+pad_up, pad_left:end_w+pad_left] = \
+#             img[:, start_h:end_h, start_w:end_w]
+
+#         idx = (den[:, 0] >= start_w) & (den[:, 0] <= end_w) & (den[:, 1] >= start_h) & (den[:, 1] <= end_h)
+#             # shift the corrdinates
+#         record_den = den[idx]
+#         record_den[:, 0] -= (start_w + pad_left)
+#         record_den[:, 1] -= (start_h + pad_up)
+
+#         result_den.append(record_den)
+#     else:
+#         for i in range(num_patch):
+#             start_h = random.randint(0, img.size(1))
+#             start_w = random.randint(0, img.size(2))
+#             end_h = start_h + half_h
+#             end_w = start_w + half_w
+#             # copy the cropped rect
+#             result_img[i] = img[:, start_h:end_h, start_w:end_w]
+#             # copy the cropped points
+#             idx = (den[:, 0] >= start_w) & (den[:, 0] <= end_w) & (den[:, 1] >= start_h) & (den[:, 1] <= end_h)
+#             # shift the corrdinates
+#             record_den = den[idx]
+#             record_den[:, 0] -= start_w
+#             record_den[:, 1] -= start_h
+
+#             result_den.append(record_den)
+
+#     return result_img, result_den
+
 def random_crop(img, den, num_patch=4):
     half_h = 128
     half_w = 128

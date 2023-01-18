@@ -19,7 +19,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser('Set parameters for training P2PNet', add_help=False)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--lr_backbone', default=1e-5, type=float)
-    parser.add_argument('--batch_size', default=24, type=int)
+    parser.add_argument('--batch_size', default=4, type=int)
     parser.add_argument('--weight_decay', default=1e-5, type=float)
     parser.add_argument('--epochs', default=3500, type=int)
     parser.add_argument('--lr_drop', default=3500, type=int)
@@ -177,15 +177,22 @@ def main(args):
         t1 = time.time()
         if epoch % 30 == 0:
             result = evaluate_crowd_no_overlap(model, data_loader_val, device, stat=stat)
-        elif epoch % args.epochs - 1 == 0:
+        elif epoch % (args.epochs - 1) == 0:
             result = evaluate_crowd_no_overlap(model, data_loader_val, device, stat=stat, calc_nAP=True)
         else:
             result = evaluate_crowd_no_overlap(model, data_loader_val, device, stat=stat, save=False)
+
         t2 = time.time()
+
 
         mae.append(result[0])
         mse.append(result[1])
-        print("mae:{}, mse:{}, time:{}, best mae:{}".format(result[0], result[1], t2 - t1, np.min(mae)))
+
+        if len(result) == 2:
+            print("mae: {}, mse: {}, time: {}, best mae: {}".format(result[0], result[1], t2 - t1, np.min(mae)))
+        else:
+            print("mae: {}, mse: {}, time: {}, best mae: {}, nAP: {}".format(result[0], result[1], t2 - t1, np.min(mae), result[2]))
+
         with open(run_log_name, "a") as log_file:
             log_file.write("mae:{}, mse:{}, time:{}, best mae:{}".format(result[0], 
                             result[1], t2 - t1, np.min(mae)))

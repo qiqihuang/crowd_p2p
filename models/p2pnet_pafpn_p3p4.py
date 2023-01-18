@@ -208,7 +208,7 @@ class P2PNet(nn.Module):
         elif name == 'cspresnet50':
             self.fpn = Decoder(256, 512)
         elif name == 'cspdarknet53':
-            self.fpn = Decoder(128, 256, 512)
+            self.fpn = Decoder(256, 512)
         else:
             self.fpn = Decoder(256, 512, 512)
         # initialize_weights(self)

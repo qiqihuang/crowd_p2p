@@ -108,12 +108,12 @@ class BackboneBase_CSPDarkNet(nn.Module):
     def forward(self, x):
         x = self.stem(x) # 1
         x = self.stage1(x) # 1/2
-        C3 = self.stage2(x) # 1/4
-        C4 = self.stage3(C3) # 1/8
-        # C5 = self.stage4(C3) # 1/16
+        x = self.stage2(x) # 1/4
+        x = self.stage3(x) # 1/8
+        # x = self.stage4(x) # 1/16
         # x = self.stage5(x) # 1/32
 
-        return C3, C4, self.stage4(C4)
+        return x, self.stage4(x)
 
 class Backbone_CSPDarkNet(BackboneBase_CSPDarkNet):
     def __init__(self, name: str):

@@ -24,7 +24,7 @@ def createFolder(directory):
 def get_args_parser():
     parser = argparse.ArgumentParser('Set parameters for training P2PNet', add_help=False)
 
-    parser.add_argument('--weight_path', type=str, default='ckpt/vgg16bn_best_mae.pth',
+    parser.add_argument('--weights', type=str, default='ckpt/best_mae.pth',
                         help="Path to the pretrained model. If set, only the mask head will be trained")
     parser.add_argument('--backbone', default='vgg16_bn', type=str,
                         help="Name of the convolutional backbone to use")
@@ -78,19 +78,19 @@ def main(args):
     data_loader_val = DataLoader(val_set, 1, sampler=sampler_val,
                                     drop_last=False, collate_fn=utils.collate_fn_crowd, num_workers=args.num_workers)
 
-    if args.weight_path is not None:
-        checkpoint = torch.load(args.weight_path, map_location='cpu')
+    if args.weights is not None:
+        checkpoint = torch.load(args.weights, map_location='cpu')
         model.load_state_dict(checkpoint['model'])
 
     print("Start Evaluating")
 
     t1 = time.time()
-    result = evaluate_crowd_no_overlap(model, data_loader_val, device, calc_nAP=True)
+    result = evaluate_crowd_no_overlap(model, data_loader_val, device, calc_nAP=True, save=False)
     t2 = time.time()
     
     # print the evaluation results
     print('=======================================test=======================================')
-    print("mae:", result[0], "mse:", result[1], "nAP: ", result[2], "time:", t2 - t1)
+    print("mae:", result[0], "mse:", result[1], "nAP:", result[2].data, "time:", t2 - t1)
     with open(run_log_name, "a") as log_file:
         log_file.write("mae:{}, mse:{}, time:{}".format(result[0], 
                         result[1], t2 - t1))

@@ -9,4 +9,5 @@ runs/
 /yolo_NWPU
 /.vscode
 /wandb
+/__pycache__
 *.engine

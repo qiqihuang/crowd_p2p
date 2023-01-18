@@ -5,8 +5,70 @@ Mostly copy-paste from DETR (https://github.com/facebookresearch/detr).
 """
 import torch
 from scipy.optimize import linear_sum_assignment
+from lapsolver import solve_dense
+from lap import lapjv
 from torch import nn
 
+def auction_lap(X, eps=10, compute_score=True):
+    """
+        X: n-by-n matrix w/ integer entries
+        eps: "bid size" -- smaller values means higher accuracy w/ longer runtime
+    """
+    eps = 1 / X.shape[0] if eps is None else eps
+    
+    # --
+    # Init
+    
+    cost     = torch.zeros((1, X.shape[1]))
+    curr_ass = torch.zeros(X.shape[0]).long() - 1
+    bids     = torch.zeros(X.shape)
+    
+    if X.is_cuda:
+        cost, curr_ass, bids = cost.cuda(), curr_ass.cuda(), bids.cuda()
+    
+    counter = 0
+    while (curr_ass == -1).any():
+        counter += 1
+        
+        # --
+        # Bidding
+        
+        unassigned = (curr_ass == -1).nonzero().squeeze()
+        
+        value = X[unassigned] - cost
+        top_value, top_idx = value.topk(2, dim=1)
+        
+        first_idx = top_idx[:,0]
+        first_value, second_value = top_value[:,0], top_value[:,1]
+        
+        bid_increments = first_value - second_value + eps
+        
+        bids_ = bids[unassigned]
+        bids_.zero_()
+        bids_.scatter_(
+            dim=1,
+            index=first_idx.contiguous().view(-1, 1),
+            src=bid_increments.view(-1, 1)
+        )
+        
+        # --
+        # Assignment
+        
+        have_bidder = (bids_ > 0).int().sum(dim=0).nonzero()
+        
+        high_bids, high_bidders = bids_[:,have_bidder].max(dim=0)
+        high_bidders = unassigned[high_bidders.squeeze()]
+        
+        cost[:,have_bidder] += high_bids
+        
+        curr_ass[(curr_ass.view(-1, 1) == have_bidder.view(1, -1)).sum(dim=1)] = -1
+        curr_ass[high_bidders] = have_bidder.squeeze()
+    
+    score = None
+    if compute_score:
+        score = int(X.gather(dim=1, index=curr_ass.view(-1, 1)).sum())
+    
+    return score, curr_ass, counter
 
 class HungarianMatcher_Crowd(nn.Module):
     """This class computes an assignment between the targets and the predictions of the network
@@ -124,8 +186,7 @@ class HungarianMatcher_Crowd_Val(nn.Module):
 
         # We flatten to compute the cost matrices in a batch
         out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)  # [batch_size * num_queries, num_classes]
-        out_points = outputs["pred_points"].flatten(0, 1)  # [batch_size * num_queries, 2]
-
+        out_points = outputs["pred_points"].flatten(0, 1)
         # Also concat the target labels and points
         # tgt_ids = torch.cat([v["labels"] for v in targets])
         tgt_ids = torch.cat([v["labels"] for v in targets])
@@ -143,10 +204,14 @@ class HungarianMatcher_Crowd_Val(nn.Module):
 
         # Final cost matrix
         C = self.cost_point * cost_point + self.cost_class * cost_class
-        C = C.view(bs, num_queries, -1).cpu()
+        C = C.view(bs, cost_point.shape[0], -1).cpu()
 
         sizes = [len(v["point"]) for v in targets]
+        #indices = [lapjv(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        #indices = [solve_dense(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        #return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
         indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        #indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
 
 def build_matcher_crowd(args):

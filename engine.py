@@ -152,7 +152,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             sys.exit(1)
         # backward
         optimizer.zero_grad()
-        losses.backward()
+        with torch.autograd.set_detect_anomaly(True):
+            losses = losses.requires_grad_()
+            losses.backward()
+
         if max_norm > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         optimizer.step()
@@ -174,26 +177,25 @@ def evaluate_crowd_no_overlap(model, data_loader, device, stat=None, vis_dir=Non
     # run inference on all images to calc MAE
     maes = []
     mses = []
-    
-    if calc_nAP:
-        matcher = HungarianMatcher_Crowd_Val(1, 0.05)
 
     save_img = 0
     example = []
     sum = 0
     cnt = 0
+    matcher = HungarianMatcher_Crowd_Val(1, 0.05)
     for samples, targets in data_loader:
         samples = samples.to(device)
         outputs = model(samples)
         outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
 
         outputs_points = outputs['pred_points'][0]
-
         gt_cnt = targets[0]['point'].shape[0]
         # 0.5 is used by default
         threshold = 0.5
         points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
-        predict_cnt = int((outputs_scores > threshold).sum())
+        np_uniq = np.unique(outputs_points[outputs_scores > threshold].detach().cpu().numpy().astype(np.uint8), axis = 1)
+        predict_cnt = np_uniq.shape[0]
+        #predict_cnt = int((outputs_scores > threshold).sum())
 
         if calc_nAP:
             indices = matcher(outputs, targets)
@@ -201,7 +203,8 @@ def evaluate_crowd_no_overlap(model, data_loader, device, stat=None, vis_dir=Non
             gt = targets[0]['point'][indices[0][1]].to(device)
             distances = torch.norm(pred - gt, dim = 1)
             gt_dists = torch.cdist(pred, gt)
-            nAP = (distances / gt_dists.topk(4, largest=False, dim = -1)[0][:, 1:].mean(dim=1) < 0.5).sum() / len(gt)
+            delta = 0.5
+            nAP = (distances / gt_dists.topk(4, largest=False, dim = -1)[0][:, 1:].mean(dim=1) < delta).sum() / len(gt)
             sum += nAP
             cnt += 1
 
@@ -209,6 +212,7 @@ def evaluate_crowd_no_overlap(model, data_loader, device, stat=None, vis_dir=Non
         if vis_dir is not None: 
             vis(samples, targets, [points], vis_dir)
         # accumulate MAE, MSE
+
         mae = abs(predict_cnt - gt_cnt)
         mse = (predict_cnt - gt_cnt) * (predict_cnt - gt_cnt)
         maes.append(float(mae))
@@ -228,7 +232,7 @@ def evaluate_crowd_no_overlap(model, data_loader, device, stat=None, vis_dir=Non
             size = 2
             # draw gt
             for t in targets[0]['point']:
-                    sample_gt = cv2.circle(sample_gt, (int(t[0]), int(t[1])), size, (0, 255, 0), -1)
+                sample_gt = cv2.circle(sample_gt, (int(t[0]), int(t[1])), size, (0, 255, 0), -1)
             # draw predictions
             for p in points:
                 sample_pred = cv2.circle(sample_pred, (int(p[0]), int(p[1])), size, (0, 0, 255), -1)

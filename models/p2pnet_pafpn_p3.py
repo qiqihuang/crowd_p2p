@@ -200,7 +200,7 @@ class P2PNet(nn.Module):
         #                                     num_classes=self.num_classes, \
         #                                     num_anchor_points=num_anchor_points)
         self.concat = Concat()
-        self.anchor_points = AnchorPoints(pyramid_levels=[3, 4], row=row, line=line)
+        self.anchor_points = AnchorPoints(pyramid_levels=[3], row=row, line=line)
 
 
         if name == 'resnet50':
@@ -208,7 +208,7 @@ class P2PNet(nn.Module):
         elif name == 'cspresnet50':
             self.fpn = Decoder(256, 512)
         elif name == 'cspdarknet53':
-            self.fpn = Decoder(128, 256, 512)
+            self.fpn = Decoder(256, 512)
         else:
             self.fpn = Decoder(256, 512, 512)
         # initialize_weights(self)
@@ -219,8 +219,8 @@ class P2PNet(nn.Module):
         features = self.backbone(samples)
         P3, P4, P5 = self.fpn(features)
 
-        reg_P5 = self.regression_P5(P5) * 100 # 8x
-        cls_P5 = self.classification_P5(P5)
+        # reg_P5 = self.regression_P5(P5) * 100 # 8x
+        # cls_P5 = self.classification_P5(P5)
 
         reg_P4 = self.regression_P4(P4) * 100 # 8x
         cls_P4 = self.classification_P4(P4)
@@ -231,8 +231,8 @@ class P2PNet(nn.Module):
         anchor_points = self.anchor_points(samples).repeat(batch_size, 1, 1)
 
         #regression = regression.sigmoid()
-        output_coord = self.concat([reg_P4, reg_P5]) + anchor_points
-        output_class = self.concat([cls_P4, cls_P5])
+        output_coord = self.concat([reg_P4]) + anchor_points
+        output_class = self.concat([cls_P4])
         out = {'pred_logits': output_class, 'pred_points': output_coord}
        
         return out

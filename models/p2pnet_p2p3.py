@@ -8,7 +8,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
 
 from .backbone import build_backbone
 from .matcher import build_matcher_crowd
-from .common import Conv
+
 import numpy as np
 
 def initialize_weights(model):
@@ -47,9 +47,9 @@ class ClassificationModel(nn.Module):
         self.num_classes = num_classes
         self.num_anchor_points = num_anchor_points
         self.conv1 = nn.Conv2d(num_features_in, feature_size, kernel_size=3, padding=1)
-        self.act1 = nn.ReLU(inplace=True)
+        self.act1 = nn.ReLU()
         self.conv2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
-        self.act2 = nn.ReLU(inplace=True)
+        self.act2 = nn.ReLU()
         self.output = nn.Conv2d(feature_size, num_anchor_points * num_classes, kernel_size=3, padding=1)
 
     def forward(self, x):
@@ -141,20 +141,16 @@ class Decoder(nn.Module):
     def __init__(self, C3_size, C4_size, C5_size, feature_size=256):
         super(Decoder, self).__init__()
 
-        self.P5_1 = Conv(C5_size, feature_size, k=1, s=1)
+        self.P5_1 = nn.Conv2d(C5_size, feature_size, kernel_size=1, stride=1, padding=0)
         self.P5_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P5_2 = Conv(feature_size, feature_size, k=3, s=1)
+        self.P5_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        self.P4_1 = Conv(C4_size, feature_size, k=1, s=1)
+        self.P4_1 = nn.Conv2d(C4_size, feature_size, kernel_size=1, stride=1, padding=0)
         self.P4_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P4_2 = Conv(feature_size, feature_size, k=3, s=1)
+        self.P4_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        self.P3_1 = Conv(C3_size, feature_size, k=1, s=1)
-        self.P3_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P3_2 = Conv(feature_size, feature_size, k=3, s=1)
-
-        self.M3_1 = Conv(feature_size, feature_size, k=3, s=2)
-        self.M4_1 = Conv(feature_size, feature_size, k=3, s=2)
+        self.P3_1 = nn.Conv2d(C3_size, feature_size, kernel_size=1, stride=1, padding=0)
+        self.P3_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
     def forward(self, inputs):
         C3, C4, C5 = inputs
@@ -169,14 +165,11 @@ class Decoder(nn.Module):
         P4_x = self.P4_2(P4_x)
 
         P3_x = self.P3_1(C3)
-        P3_x = P4_upsampled_x + P3_x
+        P3_x = P3_x + P4_upsampled_x
         P3_x = self.P3_2(P3_x)
 
-        M3_x = self.M3_1(P3_x)
-        M4_x = P4_x + M3_x
-        M5_x = P5_x + self.M4_1(M4_x)
 
-        return M3_x, M4_x, M5_x
+        return P3_x, P4_x, P5_x
 
 class P2PNet(nn.Module):
     def __init__(self, backbone, row=2, line=2, name='vgg'):
@@ -195,12 +188,12 @@ class P2PNet(nn.Module):
                                             num_classes=self.num_classes, \
                                             num_anchor_points=num_anchor_points)
 
-        # self.regression_P3 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
-        # self.classification_P3 = ClassificationModel(num_features_in=256, \
-        #                                     num_classes=self.num_classes, \
-        #                                     num_anchor_points=num_anchor_points)
+        self.regression_P3 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
+        self.classification_P3 = ClassificationModel(num_features_in=256, \
+                                            num_classes=self.num_classes, \
+                                            num_anchor_points=num_anchor_points)
         self.concat = Concat()
-        self.anchor_points = AnchorPoints(pyramid_levels=[3, 4], row=row, line=line)
+        self.anchor_points = AnchorPoints(pyramid_levels=[2, 3], row=row, line=line)
 
 
         if name == 'resnet50':
@@ -208,7 +201,7 @@ class P2PNet(nn.Module):
         elif name == 'cspresnet50':
             self.fpn = Decoder(256, 512)
         elif name == 'cspdarknet53':
-            self.fpn = Decoder(128, 256, 512)
+            self.fpn = Decoder(256, 512)
         else:
             self.fpn = Decoder(256, 512, 512)
         # initialize_weights(self)
@@ -219,20 +212,20 @@ class P2PNet(nn.Module):
         features = self.backbone(samples)
         P3, P4, P5 = self.fpn(features)
 
-        reg_P5 = self.regression_P5(P5) * 100 # 8x
-        cls_P5 = self.classification_P5(P5)
+        # reg_P5 = self.regression_P5(P5) * 100 # 8x
+        # cls_P5 = self.classification_P5(P5)
 
         reg_P4 = self.regression_P4(P4) * 100 # 8x
         cls_P4 = self.classification_P4(P4)
 
-        # reg_P3 = self.regression_P3(P3) * 100 # 8x
-        # cls_P3 = self.classification_P3(P3)
+        reg_P3 = self.regression_P3(P3) * 100 # 8x
+        cls_P3 = self.classification_P3(P3)
 
         anchor_points = self.anchor_points(samples).repeat(batch_size, 1, 1)
 
         #regression = regression.sigmoid()
-        output_coord = self.concat([reg_P4, reg_P5]) + anchor_points
-        output_class = self.concat([cls_P4, cls_P5])
+        output_coord = self.concat([reg_P3, reg_P4]) + anchor_points
+        output_class = self.concat([cls_P3, cls_P4])
         out = {'pred_logits': output_class, 'pred_points': output_coord}
        
         return out

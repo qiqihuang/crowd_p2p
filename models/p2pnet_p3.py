@@ -10,79 +10,59 @@ from .backbone import build_backbone
 from .matcher import build_matcher_crowd
 
 import numpy as np
-import time
 
-# the network frmawork of the regression branch
+def initialize_weights(model):
+    for m in model.modules():
+        t = type(m)
+        if t is nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        elif t is nn.BatchNorm2d:
+            m.eps = 1e-3
+            m.momentum = 0.03
+        elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+            m.inplace = True
+
 class RegressionModel(nn.Module):
     def __init__(self, num_features_in, num_anchor_points=4, feature_size=256):
         super(RegressionModel, self).__init__()
-
         self.conv1 = nn.Conv2d(num_features_in, feature_size, kernel_size=3, padding=1)
-        self.act1 = nn.ReLU()
-
+        self.act1 = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
-        self.act2 = nn.ReLU()
-
-        self.conv3 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
-        self.act3 = nn.ReLU()
-
-        self.conv4 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
-        self.act4 = nn.ReLU()
-
+        self.act2 = nn.ReLU(inplace=True)
         self.output = nn.Conv2d(feature_size, num_anchor_points * 2, kernel_size=3, padding=1)
-    # sub-branch forward
+        
     def forward(self, x):
-        out = self.conv1(x)
-        out = self.act1(out)
+        x = self.conv1(x)
+        x = self.act1(x)
+        x = self.conv2(x)
+        x = self.act2(x)
+        x = self.output(x)
+        bs, _, _, _ = x.shape
+        x = x.permute(0, 2, 3, 1)
+        return x.contiguous().view(bs, -1, 2)
 
-        out = self.conv2(out)
-        out = self.act2(out)
-
-        out = self.output(out)
-
-        out = out.permute(0, 2, 3, 1)
-
-        return out.contiguous().view(out.shape[0], -1, 2)
-
-# the network frmawork of the classification branch
 class ClassificationModel(nn.Module):
     def __init__(self, num_features_in, num_anchor_points=4, num_classes=80, prior=0.01, feature_size=256):
         super(ClassificationModel, self).__init__()
-
         self.num_classes = num_classes
         self.num_anchor_points = num_anchor_points
-
         self.conv1 = nn.Conv2d(num_features_in, feature_size, kernel_size=3, padding=1)
         self.act1 = nn.ReLU()
-
         self.conv2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
         self.act2 = nn.ReLU()
-
-        self.conv3 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
-        self.act3 = nn.ReLU()
-
-        self.conv4 = nn.Conv2d(feature_size, feature_size, kernel_size=3, padding=1)
-        self.act4 = nn.ReLU()
-
         self.output = nn.Conv2d(feature_size, num_anchor_points * num_classes, kernel_size=3, padding=1)
-        self.output_act = nn.Sigmoid()
-    # sub-branch forward
+
     def forward(self, x):
-        out = self.conv1(x)
-        out = self.act1(out)
+        batch_size, _, width, height = x.shape
 
-        out = self.conv2(out)
-        out = self.act2(out)
+        x = self.conv1(x)
+        x = self.act1(x)
+        x = self.conv2(x)
+        x = self.act2(x)
+        x = self.output(x)
+        x = x.permute(0, 2, 3, 1).contiguous().view(batch_size, width, height, self.num_anchor_points, self.num_classes).contiguous()
 
-        out = self.output(out)
-
-        out1 = out.permute(0, 2, 3, 1)
-
-        batch_size, width, height, _ = out1.shape
-
-        out2 = out1.view(batch_size, width, height, self.num_anchor_points, self.num_classes)
-
-        return out2.contiguous().view(x.shape[0], -1, self.num_classes)
+        return x.view(batch_size, -1, self.num_classes)
 
 # generate the reference points in grid layout
 def generate_anchor_points(stride=16, row=3, line=3):
@@ -117,13 +97,12 @@ def shift(shape, stride, anchor_points):
 
     return all_anchor_points
 
-# this class generate all reference points on all pyramid levels
 class AnchorPoints(nn.Module):
     def __init__(self, pyramid_levels=None, strides=None, row=3, line=3):
         super(AnchorPoints, self).__init__()
 
         if pyramid_levels is None:
-            self.pyramid_levels = [3, 4, 5, 6, 7]
+            self.pyramid_levels = [3, 4, 5]
         else:
             self.pyramid_levels = pyramid_levels
 
@@ -137,40 +116,41 @@ class AnchorPoints(nn.Module):
         image_shape = image.shape[2:]
         image_shape = np.array(image_shape)
         image_shapes = [(image_shape + 2 ** x - 1) // (2 ** x) for x in self.pyramid_levels]
-
         all_anchor_points = np.zeros((0, 2)).astype(np.float32)
-        # get reference points for each level
         for idx, p in enumerate(self.pyramid_levels):
-            anchor_points = generate_anchor_points(2**p, row=self.row, line=self.line)
+            anchor_points = generate_anchor_points(self.strides[idx], row=self.row, line=self.line)
             shifted_anchor_points = shift(image_shapes[idx], self.strides[idx], anchor_points)
             all_anchor_points = np.append(all_anchor_points, shifted_anchor_points, axis=0)
 
         all_anchor_points = np.expand_dims(all_anchor_points, axis=0)
-        # send reference points to device
         if torch.cuda.is_available():
             return torch.from_numpy(all_anchor_points.astype(np.float32)).cuda()
         else:
             return torch.from_numpy(all_anchor_points.astype(np.float32))
 
+class Concat(nn.Module):
+    # Concatenate a list of tensors along dimension
+    def __init__(self, dimension=1):
+        super().__init__()
+        self.d = dimension
+
+    def forward(self, x):
+        return torch.cat(x, self.d)
+
 class Decoder(nn.Module):
     def __init__(self, C3_size, C4_size, C5_size, feature_size=256):
         super(Decoder, self).__init__()
 
-        # upsample C5 to get P5 from the FPN paper
         self.P5_1 = nn.Conv2d(C5_size, feature_size, kernel_size=1, stride=1, padding=0)
         self.P5_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
         self.P5_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        # add P5 elementwise to C4
         self.P4_1 = nn.Conv2d(C4_size, feature_size, kernel_size=1, stride=1, padding=0)
         self.P4_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
         self.P4_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        # add P4 elementwise to C3
         self.P3_1 = nn.Conv2d(C3_size, feature_size, kernel_size=1, stride=1, padding=0)
-        self.P3_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
         self.P3_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
-
 
     def forward(self, inputs):
         C3, C4, C5 = inputs
@@ -188,42 +168,69 @@ class Decoder(nn.Module):
         P3_x = P3_x + P4_upsampled_x
         P3_x = self.P3_2(P3_x)
 
-        return [P3_x, P4_x, P5_x]
+
+        return P3_x, P4_x, P5_x
 
 class P2PNet(nn.Module):
-    def __init__(self, backbone, row=2, line=2):
+    def __init__(self, backbone, row=2, line=2, name='vgg'):
         super().__init__()
         self.backbone = backbone
         self.num_classes = 2
         num_anchor_points = row * line
 
-        self.regression = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
-        self.classification = ClassificationModel(num_features_in=256, \
+        # self.regression_P5 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
+        # self.classification_P5 = ClassificationModel(num_features_in=256, \
+        #                                     num_classes=self.num_classes, \
+        #                                     num_anchor_points=num_anchor_points)
+
+        self.regression_P4 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
+        self.classification_P4 = ClassificationModel(num_features_in=256, \
                                             num_classes=self.num_classes, \
                                             num_anchor_points=num_anchor_points)
 
-        self.anchor_points = AnchorPoints(pyramid_levels=[3,], row=row, line=line)
+        # self.regression_P3 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
+        # self.classification_P3 = ClassificationModel(num_features_in=256, \
+        #                                     num_classes=self.num_classes, \
+        #                                     num_anchor_points=num_anchor_points)
+        self.concat = Concat()
+        self.anchor_points = AnchorPoints(pyramid_levels=[2, 3], row=row, line=line)
 
-        self.fpn = Decoder(256, 512, 512)
+
+        if name == 'resnet50':
+            self.fpn = Decoder(512, 1024)
+        elif name == 'cspresnet50':
+            self.fpn = Decoder(256, 512)
+        elif name == 'cspdarknet53':
+            self.fpn = Decoder(256, 512)
+        else:
+            self.fpn = Decoder(256, 512, 512)
+        # initialize_weights(self)
 
     def forward(self, samples: NestedTensor):
+        batch_size = samples.shape[0]
+
         features = self.backbone(samples)
-        features_fpn = self.fpn([features[1], features[2], features[3]])
+        P3, P4, P5 = self.fpn(features)
 
-        batch_size = features[0].shape[0]
+        # reg_P5 = self.regression_P5(P5) * 100 # 8x
+        # cls_P5 = self.classification_P5(P5)
 
-        regression = self.regression(features_fpn[1]) * 100 # 8x
-        classification = self.classification(features_fpn[1])
+        reg_P4 = self.regression_P4(P4) * 100 # 8x
+        cls_P4 = self.classification_P4(P4)
+
+        # reg_P3 = self.regression_P3(P3) * 100 # 8x
+        # cls_P3 = self.classification_P3(P3)
+
         anchor_points = self.anchor_points(samples).repeat(batch_size, 1, 1)
 
-        output_coord = regression + anchor_points
-        output_class = classification
+        #regression = regression.sigmoid()
+        output_coord = reg_P4 + anchor_points
+        output_class = cls_P4
         out = {'pred_logits': output_class, 'pred_points': output_coord}
        
         return out
 
 class SetCriterion_Crowd(nn.Module):
-
     def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses):
         super().__init__()
         self.num_classes = num_classes
@@ -313,7 +320,7 @@ def build(args, training):
     num_classes = 1
 
     backbone = build_backbone(args)
-    model = P2PNet(backbone, args.row, args.line)
+    model = P2PNet(backbone, args.row, args.line, args.backbone)
     if not training: 
         return model
 

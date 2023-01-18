@@ -19,8 +19,11 @@ def initialize_weights(model):
         elif t is nn.BatchNorm2d:
             m.eps = 1e-3
             m.momentum = 0.03
-        elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+        elif t in [nn.Hardswish, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
+        elif t is nn.Parameter:
+            nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain("linear"))
+        
 
 class RegressionModel(nn.Module):
     def __init__(self, num_features_in, num_anchor_points=4, feature_size=256):
@@ -97,6 +100,22 @@ def shift(shape, stride, anchor_points):
 
     return all_anchor_points
 
+class ConvBlock(nn.Module):
+    """
+    Convolution block with Batch Normalization and ReLU activation.
+    
+    """
+    def __init__(self, in_channels, out_channels, kernel_size=1, stride=1, padding=0, dilation=1, freeze_bn=False):
+        super(ConvBlock,self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+        self.bn = nn.BatchNorm2d(out_channels, momentum=0.9997, eps=4e-5)
+        self.act = nn.ReLU()
+
+    def forward(self, inputs):
+        x = self.conv(inputs)
+        x = self.bn(x)
+        return self.act(x)
+
 class AnchorPoints(nn.Module):
     def __init__(self, pyramid_levels=None, strides=None, row=3, line=3):
         super(AnchorPoints, self).__init__()
@@ -137,46 +156,108 @@ class Concat(nn.Module):
     def forward(self, x):
         return torch.cat(x, self.d)
 
-class Decoder(nn.Module):
-    def __init__(self, C3_size, C4_size, C5_size, feature_size=256):
-        super(Decoder, self).__init__()
+class DepthwiseConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(DepthwiseConvBlock,self).__init__()
+        self.depthwise = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, 
+                               padding=1, groups=in_channels, bias=False)
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1, 
+                                   stride=1, bias=False)
+        
+        self.bn = nn.BatchNorm2d(out_channels, momentum=0.9997, eps=4e-5)
+        self.act = nn.ReLU()
+        
+    def forward(self, inputs):
+        x = self.depthwise(inputs)
+        x = self.pointwise(x)
+        x = self.bn(x)
+        return self.act(x)
 
-        self.P5_1 = Conv(C5_size, feature_size, k=1, s=1)
-        self.P5_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P5_2 = Conv(feature_size, feature_size, k=3, s=1)
-
-        self.P4_1 = Conv(C4_size, feature_size, k=1, s=1)
-        self.P4_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P4_2 = Conv(feature_size, feature_size, k=3, s=1)
-
-        self.P3_1 = Conv(C3_size, feature_size, k=1, s=1)
-        self.P3_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P3_2 = Conv(feature_size, feature_size, k=3, s=1)
-
-        self.M3_1 = Conv(feature_size, feature_size, k=3, s=2)
-        self.M4_1 = Conv(feature_size, feature_size, k=3, s=2)
+class BiFPNBlock(nn.Module):
+    """
+    Bi-directional Feature Pyramid Network
+    """
+    def __init__(self, feature_size=256, epsilon=0.0001):
+        super(BiFPNBlock, self).__init__()
+        self.epsilon = epsilon
+        
+        self.p3_td = DepthwiseConvBlock(feature_size, feature_size)
+        self.p4_td = DepthwiseConvBlock(feature_size, feature_size)
+        self.p5_td = DepthwiseConvBlock(feature_size, feature_size)
+        self.p6_td = DepthwiseConvBlock(feature_size, feature_size)
+        
+        self.p4_out = DepthwiseConvBlock(feature_size, feature_size)
+        self.p5_out = DepthwiseConvBlock(feature_size, feature_size)
+        self.p6_out = DepthwiseConvBlock(feature_size, feature_size)
+        self.p7_out = DepthwiseConvBlock(feature_size, feature_size)
+        
+        # TODO: Init weights
+        self.w1 = nn.Parameter(torch.Tensor(2, 4))
+        self.w1_relu = nn.LeakyReLU(negative_slope=0)
+        self.w2 = nn.Parameter(torch.Tensor(3, 4))
+        self.w2_relu = nn.LeakyReLU(negative_slope=0)
+        self.upsample_2x = nn.Upsample(scale_factor=2, mode='nearest')
+        self.upsample_05x = nn.Upsample(scale_factor=0.5, mode='nearest')
+        
+        self._init_weights()
 
     def forward(self, inputs):
-        C3, C4, C5 = inputs
+        p3_x, p4_x, p5_x, p6_x, p7_x = inputs
+        
+        # Calculate Top-Down Pathway
+        w1 = self.w1_relu(self.w1)
+        w1 /= torch.sum(w1, dim=0) + self.epsilon
+        w2 = self.w2_relu(self.w2)
+        w2 /= torch.sum(w2, dim=0) + self.epsilon
+        
+        p7_td = p7_x
+        p6_td = self.p6_td(w1[0, 0] * p6_x + w1[1, 0] * self.upsample_2x(p7_td))        
+        p5_td = self.p5_td(w1[0, 1] * p5_x + w1[1, 1] * self.upsample_2x(p6_td))
+        p4_td = self.p4_td(w1[0, 2] * p4_x + w1[1, 2] * self.upsample_2x(p5_td))
+        p3_td = self.p3_td(w1[0, 3] * p3_x + w1[1, 3] * self.upsample_2x(p4_td))
+        
+        # Calculate Bottom-Up Pathway
+        p3_out = p3_td
+        p4_out = self.p4_out(w2[0, 0] * p4_x + w2[1, 0] * p4_td + w2[2, 0] * self.upsample_05x(p3_out))
+        p5_out = self.p5_out(w2[0, 1] * p5_x + w2[1, 1] * p5_td + w2[2, 1] * self.upsample_05x(p4_out))
+        p6_out = self.p6_out(w2[0, 2] * p6_x + w2[1, 2] * p6_td + w2[2, 2] * self.upsample_05x(p5_out))
+        p7_out = self.p7_out(w2[0, 3] * p7_x + w2[1, 3] * p7_td + w2[2, 3] * self.upsample_05x(p6_out))
 
-        P5_x = self.P5_1(C5)
-        P5_upsampled_x = self.P5_upsampled(P5_x)
-        P5_x = self.P5_2(P5_x)
+        return [p3_out, p4_out, p5_out, p6_out, p7_out]
+    
+    def _init_weights(self):
+        initialize_weights(self)
 
-        P4_x = self.P4_1(C4)
-        P4_x = P5_upsampled_x + P4_x
-        P4_upsampled_x = self.P4_upsampled(P4_x)
-        P4_x = self.P4_2(P4_x)
+class Decoder(nn.Module):
+    def __init__(self, C3_size, C4_size, C5_size, feature_size=256, num_layers=2, epsilon=0.0001):
+        super(Decoder, self).__init__()
+        self.p3 = nn.Conv2d(C3_size, feature_size, kernel_size=1, stride=1, padding=0)
+        self.p4 = nn.Conv2d(C4_size, feature_size, kernel_size=1, stride=1, padding=0)
+        self.p5 = nn.Conv2d(C5_size, feature_size, kernel_size=1, stride=1, padding=0)
+        
+        # p6 is obtained via a 3x3 stride-2 conv on C5
+        self.p6 = nn.Conv2d(C5_size, feature_size, kernel_size=3, stride=2, padding=1)
+        
+        # p7 is computed by applying ReLU followed by a 3x3 stride-2 conv on p6
+        self.p7 = ConvBlock(feature_size, feature_size, kernel_size=3, stride=2, padding=1)
 
-        P3_x = self.P3_1(C3)
-        P3_x = P4_upsampled_x + P3_x
-        P3_x = self.P3_2(P3_x)
-
-        M3_x = self.M3_1(P3_x)
-        M4_x = P4_x + M3_x
-        M5_x = P5_x + self.M4_1(M4_x)
-
-        return M3_x, M4_x, M5_x
+        bifpns = []
+        for _ in range(num_layers):
+            bifpns.append(BiFPNBlock(feature_size))
+        self.bifpn = nn.Sequential(*bifpns)
+    
+    def forward(self, inputs):
+        c3, c4, c5 = inputs
+        
+        # Calculate the input column of BiFPN
+        p3_x = self.p3(c3)        
+        p4_x = self.p4(c4)
+        p5_x = self.p5(c5)
+        p6_x = self.p6(c5)
+        p7_x = self.p7(p6_x)
+        
+        features = [p3_x, p4_x, p5_x, p6_x, p7_x]
+        return self.bifpn(features)
 
 class P2PNet(nn.Module):
     def __init__(self, backbone, row=2, line=2, name='vgg'):
@@ -184,6 +265,16 @@ class P2PNet(nn.Module):
         self.backbone = backbone
         self.num_classes = 2
         num_anchor_points = row * line
+
+        self.regression_P7 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
+        self.classification_P7 = ClassificationModel(num_features_in=256, \
+                                            num_classes=self.num_classes, \
+                                            num_anchor_points=num_anchor_points)
+
+        self.regression_P6 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
+        self.classification_P6 = ClassificationModel(num_features_in=256, \
+                                            num_classes=self.num_classes, \
+                                            num_anchor_points=num_anchor_points)
 
         self.regression_P5 = RegressionModel(num_features_in=256, num_anchor_points=num_anchor_points)
         self.classification_P5 = ClassificationModel(num_features_in=256, \
@@ -208,7 +299,7 @@ class P2PNet(nn.Module):
         elif name == 'cspresnet50':
             self.fpn = Decoder(256, 512)
         elif name == 'cspdarknet53':
-            self.fpn = Decoder(128, 256, 512)
+            self.fpn = Decoder(256, 512)
         else:
             self.fpn = Decoder(256, 512, 512)
         # initialize_weights(self)
@@ -217,13 +308,19 @@ class P2PNet(nn.Module):
         batch_size = samples.shape[0]
 
         features = self.backbone(samples)
-        P3, P4, P5 = self.fpn(features)
+        fpn_features = self.fpn(features)
 
-        reg_P5 = self.regression_P5(P5) * 100 # 8x
-        cls_P5 = self.classification_P5(P5)
+        # reg_P7 = self.regression_P7(fpn_features[4]) * 100 # 8x
+        # cls_P7 = self.classification_P7(fpn_features[4])
 
-        reg_P4 = self.regression_P4(P4) * 100 # 8x
-        cls_P4 = self.classification_P4(P4)
+        # reg_P6 = self.regression_P6(fpn_features[3]) * 100 # 8x
+        # cls_P6 = self.classification_P6(fpn_features[3])
+
+        reg_P5 = self.regression_P5(fpn_features[2]) * 100 # 8x
+        cls_P5 = self.classification_P5(fpn_features[2])
+
+        reg_P4 = self.regression_P4(fpn_features[1]) * 100 # 8x
+        cls_P4 = self.classification_P4(fpn_features[1])
 
         # reg_P3 = self.regression_P3(P3) * 100 # 8x
         # cls_P3 = self.classification_P3(P3)

@@ -114,7 +114,7 @@ def main(args, debug=False):
     # convert to eval mode
     model.eval()
     # create the pre-processing transform
-    
+
     transform = standard_transforms.Compose([
         standard_transforms.ToTensor(), 
         standard_transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -130,10 +130,6 @@ def main(args, debug=False):
     new_height = height // 128 * 128
     img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
 
-    im = torch.zeros(1, 3, new_height, new_width).to(device)
-    for _ in range(5):
-        y = model(im)
-    
     if args.profile:
         im = torch.zeros(1, 3, 768, 1280).to(device)
         model = model.train()
@@ -160,7 +156,11 @@ def main(args, debug=False):
                 timings[rep] = curr_time
             print('Rep %d ' % repetitions + 'avg timing: %.3fms' % np.mean(timings))
         return 1
-
+    else:
+        im = torch.zeros(1, 3, new_height, new_width).to(device)
+        for _ in range(5):
+            y = model(im)
+    
     img = transform(img_raw)
     samples = torch.Tensor(img).unsqueeze(0).repeat(2, 1, 1, 1)
     samples = samples.to(device)
