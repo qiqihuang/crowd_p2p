@@ -166,8 +166,7 @@ def main(args, debug=False):
     samples = samples.to(device)
 
     outputs = model(samples)
-    outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
-
+    outputs_scores = outputs['pred_logits'][0]
     outputs_points = outputs['pred_points'][0]
 
     threshold = 0.5
@@ -175,9 +174,6 @@ def main(args, debug=False):
     points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
     predict_cnt = int((outputs_scores > threshold).sum())
 
-    outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
-
-    outputs_points = outputs['pred_points'][0]
     size = 2
     img_to_draw = cv2.cvtColor(np.array(img_raw), cv2.COLOR_RGB2BGR)
     for p in points:
