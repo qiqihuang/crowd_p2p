@@ -96,7 +96,7 @@ def main(args, debug=False):
 
     ''' Pytorch Model '''
     outputs = model(samples)
-    outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
+    outputs_scores = outputs['pred_logits'][0]
     outputs_points = outputs['pred_points'][0]
     threshold = 0.5
     points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
@@ -130,7 +130,7 @@ def main(args, debug=False):
             print("Error.")
             print(msg)
 
-    onnx_outputs_scores = torch.nn.functional.softmax(torch.from_numpy(out[0]), -1)[:, :, 1][0]
+    onnx_outputs_scores = out[0]
     onnx_outputs_points = torch.from_numpy(out[1][0])[onnx_outputs_scores > threshold]
     onnx_predict_cnt = int((onnx_outputs_scores > threshold).sum())
 

@@ -4,7 +4,7 @@ import datetime
 import random
 import time
 from pathlib import Path
-
+from util.general import letterbox
 import torch
 import torchvision.transforms as standard_transforms
 import numpy as np
@@ -13,6 +13,7 @@ from PIL import Image
 import cv2
 from crowd_datasets import build_dataset
 from engine import *
+
 from models import build_model
 import os
 import warnings
@@ -44,7 +45,7 @@ def get_args_parser():
     parser.add_argument('--output_dir', default='./test_folder',
                         help='path where to save')
 
-    parser.add_argument('--weight_path', default='./ckpt/vgg_best_mae.pth',
+    parser.add_argument('--weights', default='./ckpt/vgg_best_mae.pth',
                         help='path where the trained weights saved')
 
     parser.add_argument('--gpu_id', default=0, type=int, help='the gpu used for evaluation')
@@ -61,8 +62,8 @@ def main(args, debug=False):
     os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
     device = torch.device('cuda')
     model = build_model(args).to(device)
-    if args.weight_path is not None:
-        checkpoint = torch.load(args.weight_path, map_location='cpu')
+    if args.weights is not None:
+        checkpoint = torch.load(args.weights, map_location='cpu')
         model.load_state_dict(checkpoint['model'])
     model.eval()
     transform = standard_transforms.Compose([
@@ -82,9 +83,14 @@ def main(args, debug=False):
     img_path = "./vis/demo1.jpg"
     img_raw = Image.open(img_path).convert('RGB')
     width, height = img_raw.size
-    new_width = width // 128 * 128
-    new_height = height // 128 * 128
-    img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
+    new_width = 1280
+    new_height = 768
+    numpy_image=np.array(img_raw)
+    opencv_image=cv2.cvtColor(numpy_image, cv2.COLOR_RGB2BGR)
+    img_raw, _, _ = letterbox(opencv_image, (768, 1280), auto=False)
+    color_coverted = cv2.cvtColor(img_raw, cv2.COLOR_BGR2RGB)
+    img_raw=Image.fromarray(color_coverted)
+    # img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
 
     im = torch.zeros(1, 3, new_width, new_height).to(device)
     for _ in range(2):
@@ -96,7 +102,7 @@ def main(args, debug=False):
 
     ''' Pytorch Model '''
     outputs = model(samples)
-    outputs_scores = torch.nn.functional.softmax(outputs['pred_logits'], -1)[:, :, 1][0]
+    outputs_scores = outputs['pred_logits'][0]
     outputs_points = outputs['pred_points'][0]
     threshold = 0.5
     points = outputs_points[outputs_scores > threshold].detach().cpu().numpy().tolist()
@@ -155,15 +161,29 @@ def main(args, debug=False):
 
     if args.differ_test:
         try: 
-            torch_out = np.array([to_numpy(outputs['pred_logits']), to_numpy(outputs['pred_points'])])
-            trt_out = np.array([to_numpy(trt_pred_logits), to_numpy(trt_pred_points)])
-            np.testing.assert_allclose(torch_out, trt_out, rtol=1e-03, atol=1e-05)
-            print("no difference.")
+            # torch_out = np.array([to_numpy(outputs['pred_logits'].squeeze(0).unsqueeze(1)), to_numpy(outputs['pred_points'])])
+            # trt_out = np.array([to_numpy(trt_pred_logits.squeeze(0).unsqueeze(1)), to_numpy(trt_pred_points)])
+            torch_logits_out = to_numpy(outputs['pred_logits'])
+            trt_logits_out = to_numpy(trt_pred_logits)
+            np.testing.assert_allclose(torch_logits_out, trt_logits_out, rtol=1e-03, atol=1e-05)
+            print("logits is no difference.")
+
         except AssertionError as msg:
             print("Error.")
             print(msg)
 
-    trt_outputs_scores = torch.nn.functional.softmax(trt_pred_logits, -1)[:, :, 1][0]
+    if args.differ_test:
+        try:
+            torch_points_out = to_numpy(outputs['pred_points'])
+            trt_points_out = to_numpy(trt_pred_points)
+            np.testing.assert_allclose(torch_points_out, trt_points_out, rtol=1e-03, atol=1e-05)
+            print("points is no difference.")
+
+        except AssertionError as msg:
+            print("Error.")
+            print(msg)
+            
+    trt_outputs_scores = trt_pred_logits[0]
     trt_outputs_points = trt_pred_points[0][trt_outputs_scores > threshold]
     trt_predict_cnt = int((trt_outputs_scores > threshold).sum())
 

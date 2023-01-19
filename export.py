@@ -54,15 +54,15 @@ def export_onnx(model, im, onnxfile, opset_version=13, dynamic=False, train=Fals
             'images': {
                 0: 'batch',
                 2: 'height',
-                3: 'width'},  # shape(1,3,640,640)
+                3: 'width'},  # shape(1, 3, 1280, 768)
 
             'pred_logits': {
                 0: 'batch',
-                1: 'points'},  # shape(1,25200,85)
+                1: 'points'},  
 
             'pred_points': {
                 0: 'batch',
-                1: 'points'}  # shape(1,25200,85)
+                1: 'points'}
         } if dynamic else None)
 
     import onnx, onnxsim
@@ -72,7 +72,7 @@ def export_onnx(model, im, onnxfile, opset_version=13, dynamic=False, train=Fals
     assert check, 'assert check failed'
     onnx.save(model_onnx, onnxfile)
 
-def export_engine(onnx_file, save_engine, half=False):
+def export_engine(onnx_file, save_engine, half=True):
     import tensorrt as trt
     dynamic = False
     logger = trt.Logger(trt.Logger.INFO)
@@ -98,10 +98,38 @@ def export_engine(onnx_file, save_engine, half=False):
         print(f'{prefix}\toutput "{out.name}" with shape {out.shape} and dtype {out.dtype}')
     
     if builder.platform_has_fast_fp16 and half:
+        print("Available FP16 and create Half Engine")
         config.set_flag(trt.BuilderFlag.FP16)
 
     with builder.build_engine(network, config) as engine, open(save_engine, 'wb') as t:
         t.write(engine.serialize())
+
+
+def main(args, debug=False):
+    os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
+    device = torch.device('cuda')
+    model = build_model(args).to(device)
+    if args.weights is not None:
+        checkpoint = torch.load(args.weights, map_location='cpu')
+        model.load_state_dict(checkpoint['model'])
+    model.eval()
+
+    img_path = "./vis/demo1.jpg"
+    img_raw = Image.open(img_path).convert('RGB')
+    width, height = img_raw.size
+    new_width = 1280
+    new_height = 768
+    img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
+
+    im = torch.zeros(1, 3, new_height, new_width).to(device)
+    for _ in range(2):
+        y = model(im)
+
+    if args.onnxfile:
+        export_onnx(model, im, '/'.join(['./onnx', args.onnxfile]), opset_version=13, dynamic=False, train=False)
+
+    if args.onnxfile and args.enginefile:
+        export_engine('/'.join(['./onnx', args.onnxfile]), '/'.join(['./tensorrt', args.enginefile]))
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set parameters for P2PNet evaluation', add_help=False)
@@ -114,38 +142,12 @@ def get_args_parser():
                         help="line number of anchor points")
     parser.add_argument('--output_dir', default='./',
                         help='path where to save')
-    parser.add_argument('--weight_path', default='./ckpt/vgg_best_mae.pth',
+    parser.add_argument('--weights', default='./ckpt/vgg_best_mae.pth',
                         help='path where the trained weights saved')
     parser.add_argument('--gpu_id', default=0, type=int, help='the gpu used for evaluation')
     parser.add_argument('--onnxfile', default=None, type=str, help='path where the onnx file saved')
     parser.add_argument('--enginefile', default=None, type=str, help='path where the onnx file saved')
     return parser
-
-def main(args, debug=False):
-    os.environ["CUDA_VISIBLE_DEVICES"] = '{}'.format(args.gpu_id)
-    device = torch.device('cuda')
-    model = build_model(args).to(device)
-    if args.weight_path is not None:
-        checkpoint = torch.load(args.weight_path, map_location='cpu')
-        model.load_state_dict(checkpoint['model'])
-    model.eval()
-
-    img_path = "./vis/demo1.jpg"
-    img_raw = Image.open(img_path).convert('RGB')
-    width, height = img_raw.size
-    new_width = width // 128 * 128
-    new_height = height // 128 * 128
-    img_raw = img_raw.resize((new_width, new_height), Image.ANTIALIAS)
-
-    im = torch.zeros(1, 3, new_height, new_width).to(device)
-    for _ in range(2):
-        y = model(im)
-
-    if args.onnxfile:
-        export_onnx(model, im, '/'.join(['./onnx', args.onnxfile]), opset_version=13, dynamic=False, train=False)
-
-    if args.onnxfile and args.enginefile:
-        export_engine('/'.join(['./onnx', args.onnxfile]), '/'.join(['./tensorrt', args.enginefile]))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('P2PNet Make Onnxfile Script', parents=[get_args_parser()])

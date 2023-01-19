@@ -77,16 +77,16 @@ class BackboneBase_CSPResNet(nn.Module):
         self.stage1 = backbone.stages[0]
         self.stage2 = backbone.stages[1]
         self.stage3 = backbone.stages[2]
-        #self.stage4 = backbone.stages[3]
+        self.stage4 = backbone.stages[3]
     
     def forward(self, x):
         x = self.stem(x) # 1/4
-        x = self.stage1(x) # 1/4
-        x = self.stage2(x) # 1/8
-        # x = self.stage3(x) # 1/16
-        # x = self.stage4(x) # 1/32
+        C3 = self.stage1(x) # 1/4
+        C4 = self.stage2(C3) # 1/8
+        C5 = self.stage3(C4) # 1/16
+        C6 = self.stage4(C5) # 1/32
 
-        return x, self.stage3(x)
+        return C3, C4, C5, C6
 
 class Backbone_CSPResNet(BackboneBase_CSPResNet):
     def __init__(self, name: str):
@@ -116,6 +116,33 @@ class BackboneBase_CSPDarkNet(nn.Module):
         return C3, C4, self.stage4(C4)
 
 class Backbone_CSPDarkNet(BackboneBase_CSPDarkNet):
+    def __init__(self, name: str):
+        if name == 'cspdarknet53':
+            backbone = timm.create_model('cspdarknet53', pretrained=True)
+        
+        super().__init__(backbone)
+
+class BackboneBase_CSPResNeXt(nn.Module):
+    def __init__(self, backbone) -> None:
+        super().__init__()
+        self.stem = backbone.stem
+        self.stage1 = backbone.stages[0]
+        self.stage2 = backbone.stages[1]
+        self.stage3 = backbone.stages[2]
+        self.stage4 = backbone.stages[3]
+        #self.stage5 = backbone.stages[4]
+    
+    def forward(self, x):
+        x = self.stem(x) # 1
+        x = self.stage1(x) # 1/2
+        C3 = self.stage2(x) # 1/4
+        C4 = self.stage3(C3) # 1/8
+        C5 = self.stage4(C4) # 1/16
+        # C6 = self.stage5(C5) # 1/32
+
+        return C3, C4, C5, self.stage5(C5)
+
+class Backbone_CSPResNeXt(BackboneBase_CSPResNeXt):
     def __init__(self, name: str):
         if name == 'cspdarknet53':
             backbone = timm.create_model('cspdarknet53', pretrained=True)

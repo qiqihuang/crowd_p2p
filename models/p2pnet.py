@@ -179,7 +179,7 @@ class Decoder(nn.Module):
         return M3_x, M4_x, M5_x
 
 class P2PNet(nn.Module):
-    def __init__(self, backbone, row=2, line=2, name='vgg'):
+    def __init__(self, backbone, row=2, line=2, name='vgg', role='train'):
         super().__init__()
         self.backbone = backbone
         self.num_classes = 2
@@ -201,7 +201,12 @@ class P2PNet(nn.Module):
         #                                     num_anchor_points=num_anchor_points)
         self.concat = Concat()
         self.anchor_points = AnchorPoints(pyramid_levels=[3, 4], row=row, line=line)
-
+        
+        if role != 'train':
+            self.role = True
+            self.softmax = nn.Softmax(-1)
+        else:
+            self.role = False
 
         if name == 'resnet50':
             self.fpn = Decoder(512, 1024)
@@ -233,8 +238,12 @@ class P2PNet(nn.Module):
         #regression = regression.sigmoid()
         output_coord = self.concat([reg_P4, reg_P5]) + anchor_points
         output_class = self.concat([cls_P4, cls_P5])
+            # output_class = self.softmax(output_class)[:, :, 1][0]
+        if self.role:
+            output_class = self.softmax(output_class).select(2, 1)
+
         out = {'pred_logits': output_class, 'pred_points': output_coord}
-       
+
         return out
 
 class SetCriterion_Crowd(nn.Module):
@@ -327,7 +336,7 @@ def build(args, training):
     num_classes = 1
 
     backbone = build_backbone(args)
-    model = P2PNet(backbone, args.row, args.line, args.backbone)
+    model = P2PNet(backbone, args.row, args.line, args.backbone, 'train' if training else 'infer')
     if not training: 
         return model
 
