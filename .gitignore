@@ -11,3 +11,4 @@ runs/
 /wandb
 /__pycache__
 *.engine
+*.mp4
